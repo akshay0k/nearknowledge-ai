@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+  background:
+    radial-gradient(circle at top right,
+      rgba(91, 140, 255, 0.12),
+      transparent 35%),
+    #0B0F19;
+
+  color: #F8FAFC;
+  font-family: Inter, sans-serif;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
