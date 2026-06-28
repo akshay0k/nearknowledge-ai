@@ -4,7 +4,7 @@ import { generateGeminiContent } from "../services/geminiGenerateService.js";
 
 const CONTEXT_CHAR_LIMIT = Number(process.env.DOCUMENT_CONTEXT_LIMIT || 12000);
 const ANSWER_MAX_OUTPUT_TOKENS = Number(
-  process.env.GEMINI_ANSWER_MAX_OUTPUT_TOKENS || 900,
+  process.env.GEMINI_ANSWER_MAX_OUTPUT_TOKENS || 1400,
 );
 const ANSWER_GENERATION_CONFIG = {
   temperature: 0.3,
@@ -70,9 +70,26 @@ const isOverviewQuestion = (question) =>
     question,
   );
 
+const isCreationRequest = (question) =>
+  /\b(create|make|write|draft|generate|prepare|build|compose|design)\b/i.test(
+    question,
+  );
+
+const isChangeRequest = (question) =>
+  /\b(change|rewrite|reword|improve|edit|modify|convert|translate|format|fix|update)\b/i.test(
+    question,
+  );
+
+const referencesDocumentContext = (question) =>
+  isOverviewQuestion(question) ||
+  /\b(pdf|document|file|uploaded|this|that|it|above|text|content|page|chapter|section|according to|based on|from the)\b/i.test(
+    question,
+  );
+
 const selectRelevantChunks = (question, chunks) => {
   const terms = getQuestionTerms(question);
   let selectedChunks = chunks;
+  let hasMatchingChunks = false;
 
   if (!isOverviewQuestion(question) && terms.length > 0) {
     const rankedChunks = chunks
@@ -83,12 +100,17 @@ const selectRelevantChunks = (question, chunks) => {
       .sort((a, b) => b.score - a.score);
 
     if (rankedChunks[0]?.score > 0) {
+      hasMatchingChunks = true;
       selectedChunks = rankedChunks
         .filter((item) => item.score > 0)
         .slice(0, 8)
         .map((item) => item.chunk)
         .sort((a, b) => a.chunkIndex - b.chunkIndex);
     }
+  }
+
+  if (!referencesDocumentContext(question) && !hasMatchingChunks) {
+    return "";
   }
 
   const selectedContent = [];
@@ -114,11 +136,68 @@ const getReadableSentences = (text) =>
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence.length > 40);
 
+const getRequestedItemCount = (question) => {
+  const match = question.match(
+    /\b(\d{1,2})\s*(bullet|point|item|idea|step|section|part)s?\b/i,
+  );
+  const count = Number(match?.[1] || 3);
+
+  return Math.min(Math.max(count, 1), 8);
+};
+
+const getRequestSubject = (question) =>
+  question
+    .replace(
+      /^(please\s+)?(can you\s+|could you\s+|would you\s+)?(create|make|write|draft|generate|prepare|build|compose|design|change|rewrite|reword|improve|edit|modify|convert|translate|format|fix|update)\s+/i,
+      "",
+    )
+    .trim()
+    .replace(/[?.!]+$/, "");
+
+const createStarterContent = (question, context) => {
+  const itemCount = getRequestedItemCount(question);
+  const subject = getRequestSubject(question) || "the requested content";
+  const contextIdea = getReadableSentences(context)[0];
+  const contextLine = contextIdea ? `\n\nPDF idea to use: ${contextIdea}` : "";
+  const items = [
+    `Goal: Create ${subject} with a clear purpose and audience.`,
+    "Structure: Start with the most important information, then add supporting details.",
+    "Content: Include specific examples, names, sections, or steps that make the result practical.",
+    "Style: Keep it simple, polished, and easy to read.",
+    "Finish: Review the result and adjust details to match the exact use case.",
+    "Next step: Add visuals, links, or data if the final output needs to be presented.",
+    "Quality check: Remove repeated points and make every line useful.",
+    "Delivery: Put the final version in the format the user requested.",
+  ];
+
+  return `Created draft for ${subject}:${contextLine}\n\n${items
+    .slice(0, itemCount)
+    .map((item) => `- ${item}`)
+    .join("\n")}`;
+};
+
+const createChangeFallbackContent = (question, context) => {
+  const subject = getRequestSubject(question) || "the provided content";
+  const excerpt = getReadableSentences(context).slice(0, 2).join(" ");
+
+  return `Changed version for ${subject}:\n\n${
+    excerpt || "Please paste the exact text you want changed, and I will rewrite it directly."
+  }`;
+};
+
 const createLocalFallbackAnswer = (question, chunks) => {
   const context = selectRelevantChunks(question, chunks).trim();
 
+  if (isCreationRequest(question)) {
+    return createStarterContent(question, context);
+  }
+
+  if (isChangeRequest(question)) {
+    return createChangeFallbackContent(question, context);
+  }
+
   if (!context) {
-    return "I can see the PDF is uploaded, but I could not read enough text from it to answer this question.";
+    return "I could not complete that answer from the PDF context right now. Please send the question again with a little more detail.";
   }
 
   const sentences = getReadableSentences(context);
@@ -194,23 +273,24 @@ export const chatWithDocument = async (req, res) => {
 
     const context = selectRelevantChunks(question, chunks);
 
-    // Create prompt
     const prompt = `
-You are NearKnowledge AI, a helpful assistant for uploaded PDFs.
+You are NearKnowledge AI, a general-purpose assistant inside a PDF workspace.
 
-Use the PDF context as your primary source. The user may ask for direct facts, summaries, explanations, examples, related concepts, or general questions inspired by the PDF.
+The uploaded PDF context is available below, but the user's request is the priority. Answer the request directly.
 
 Rules:
-1. If the answer is in the PDF context, answer directly from it.
-2. If the user asks for explanation or related background, use the PDF context plus your general knowledge to explain clearly.
-3. If the question is not directly answered by the PDF, still answer helpfully. Briefly say when something is not directly stated in the PDF instead of refusing.
-4. Do not reply with "I couldn't find that information in the uploaded document" unless the user specifically asks whether exact information exists in the PDF.
-5. Keep the answer clear, useful, and concise.
+1. If the user asks about the PDF, this document, "it", a summary, or details from the file, use the PDF context.
+2. If the user asks a general question, answer normally using your knowledge. Do not refuse just because it is not in the PDF.
+3. If the user asks you to create, write, draft, generate, prepare, build, compose, or design something, create the requested content immediately.
+4. If the user asks you to change, rewrite, improve, edit, modify, convert, translate, format, fix, or update something, provide the changed version.
+5. If the request should use the PDF, use it. If it does not need the PDF, ignore the PDF context.
+6. Do not say "I couldn't find that information in the uploaded document" unless the user specifically asks whether exact information exists in the PDF.
+7. Keep answers clear and practical. Use code blocks, lists, tables, or drafts when they fit the request.
 
-PDF context:
+Available PDF context:
 ${context}
 
-Question:
+User request:
 ${question}
 `;
 

@@ -71,7 +71,7 @@ const ChatInput = ({ documentId, disabled = false, setMessages }) => {
               handleSend();
             }
           }}
-          placeholder="Ask about this PDF or a related topic..."
+          placeholder="Ask, create, rewrite, or use this PDF..."
           disabled={disabled || loading}
           className="min-w-0 flex-1 rounded-lg border border-[#25314A] bg-[#141A26] px-4 py-3 text-white outline-none placeholder:text-slate-500 focus:border-blue-500 sm:px-5 sm:py-4"
         />
