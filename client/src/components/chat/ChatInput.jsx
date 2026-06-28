@@ -36,14 +36,21 @@ const ChatInput = ({ documentId, disabled = false, setMessages }) => {
         },
       ]);
     } catch (error) {
-      console.error(error);
+      const status = error.response?.status;
+      const serverMessage = error.response?.data?.message;
+      const isTemporaryServerError =
+        status >= 500 || /busy|temporarily unavailable/i.test(serverMessage || "");
+
+      console.warn("Chat request failed", status || error.message);
 
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
           text:
-            error.response?.data?.message ||
+            (isTemporaryServerError
+              ? "I could not complete that answer right now. Please send it again in a moment."
+              : serverMessage) ||
             "Sorry, something went wrong. Please try again.",
         },
       ]);
@@ -64,7 +71,7 @@ const ChatInput = ({ documentId, disabled = false, setMessages }) => {
               handleSend();
             }
           }}
-          placeholder="Ask anything about this document..."
+          placeholder="Ask about this PDF or a related topic..."
           disabled={disabled || loading}
           className="min-w-0 flex-1 rounded-lg border border-[#25314A] bg-[#141A26] px-4 py-3 text-white outline-none placeholder:text-slate-500 focus:border-blue-500 sm:px-5 sm:py-4"
         />
@@ -74,7 +81,7 @@ const ChatInput = ({ documentId, disabled = false, setMessages }) => {
           disabled={loading || disabled}
           className="flex items-center justify-center"
         >
-          {loading ? "Thinking..." : <Send size={18} />}
+          {loading ? "Answering..." : <Send size={18} />}
         </Button>
       </div>
     </div>

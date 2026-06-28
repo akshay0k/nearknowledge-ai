@@ -4,6 +4,21 @@ const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const getModelCandidates = ({ model, models }) => {
+  const configuredModels =
+    models ||
+    model ||
+    process.env.GEMINI_MODELS ||
+    process.env.GEMINI_MODEL ||
+    "gemini-2.5-flash,gemini-2.0-flash";
+
+  const candidates = Array.isArray(configuredModels)
+    ? configuredModels
+    : configuredModels.split(",");
+
+  return [...new Set(candidates.map((item) => item.trim()).filter(Boolean))];
+};
+
 const parseGeminiError = (error) => {
   if (!error?.message) {
     return {};
@@ -34,33 +49,50 @@ const isTransientGeminiError = (error) => {
   );
 };
 
+const isModelUnavailableError = (error) => {
+  const status = getErrorStatus(error);
+  const message = (error?.message || "").toLowerCase();
+
+  return (
+    status === 404 ||
+    (message.includes("model") &&
+      (message.includes("not found") || message.includes("not supported")))
+  );
+};
+
 export const generateGeminiContent = async ({
-  model = process.env.GEMINI_MODEL || "gemini-2.5-flash",
-  attempts = 3,
+  model,
+  models,
+  attempts = 1,
   ...params
 }) => {
   let lastError;
+  const modelCandidates = getModelCandidates({ model, models });
 
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      return await ai.models.generateContent({
-        model,
-        ...params,
-      });
-    } catch (error) {
-      lastError = error;
+  for (const modelName of modelCandidates) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        return await ai.models.generateContent({
+          model: modelName,
+          ...params,
+        });
+      } catch (error) {
+        lastError = error;
 
-      if (!isTransientGeminiError(error) || attempt === attempts) {
-        break;
+        if (!isTransientGeminiError(error) && !isModelUnavailableError(error)) {
+          throw error;
+        }
+
+        if (isTransientGeminiError(error) && attempt < attempts) {
+          await sleep(300 * attempt);
+        }
       }
-
-      await sleep(attempt * 1000);
     }
   }
 
   if (isTransientGeminiError(lastError)) {
     throw new Error(
-      "The AI model is busy right now. Please try again in a moment.",
+      "The AI service is temporarily unavailable. Please try again.",
     );
   }
 
